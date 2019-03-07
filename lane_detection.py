@@ -8,6 +8,7 @@ from arg_parser import args
 
 # Setup video playback
 video_dir = args.video_dir
+video_rot = args.video_rot if (args.video_rot % 90 == 0) else 270
 video_str = str('video_data_' + str(args.video_num))
 cap = cv2.VideoCapture(video_dir + video_str + '.mov')
 # Get frame size (out of typical order because image gets rotated)
@@ -41,15 +42,43 @@ def detect_edges(image, low_threshold=50, high_threshold=150):
     """
     return cv2.Canny(image, low_threshold, high_threshold)
 
+def filter_region(image, vertices):
+    """
+    Create the mask using the vertices and apply it to the input image
+    """
+    mask = np.zeros_like(image)
+    if len(mask.shape)==2:
+        cv2.fillPoly(mask, vertices, 255)
+    else:
+        cv2.fillPoly(mask, vertices, (255,)*mask.shape[2]) # in case, the input image has a channel dimension
+    return cv2.bitwise_and(image, mask)
+
+
+def select_region(image):
+    """
+    It keeps the region surrounded by the `vertices` (i.e. polygon).  Other area is set to 0 (black).
+    """
+    # first, define the polygon by vertices
+    rows, cols = image.shape[:2]
+    bottom_left  = [cols*0.05, rows*0.95]
+    top_left     = [cols*0.3, rows*0.55]
+    bottom_right = [cols*0.95, rows*0.95]
+    top_right    = [cols*0.7, rows*0.55]
+    # the vertices are an array of polygons (i.e array of arrays) and the data type must be integer
+    vertices = np.array([[bottom_left, top_left, top_right, bottom_right]], dtype=np.int32)
+    return filter_region(image, vertices)
+
 # Process a single image frame
 def process_frame(frame):
     processed = frame
     # Rotate Image
-    processed = imutils.rotate_bound(frame, 270) 
+    processed = imutils.rotate_bound(frame, video_rot) 
     # Convert image to grayscale
     processed = cv2.cvtColor(processed, cv2.COLOR_BGR2GRAY)
     # Apply Gaussian blurring with specififed kernel size (k x k)
     processed = apply_smoothing(processed, kernel_size = 3)
+    # Select Region of Interest
+    processed = select_region(processed)
     # Apply Canny Edge Detection
     processed = detect_edges(processed)  # Apply canny
 
