@@ -115,7 +115,7 @@ def draw_hough_lines(image, lines):
     return line_image
 
 # Process Hough Lines
-def process_lines(lines, min_slope=0.4, max_slope =0.7):
+def process_hough_lines(lines, min_slope=0.4, max_slope =0.7):
     """ 
     Apply post-processing to hough lines returned.
     """
@@ -123,15 +123,93 @@ def process_lines(lines, min_slope=0.4, max_slope =0.7):
     if len(lines) > 0:
         for line in lines:
             for x1, y1, x2, y2 in line:
-                # Skip for vertical line
-                if(x2 == x1):
+                # Skip for vertical/horizontal line
+                if(x2 == x1 or y2 == y1):
                     continue
                 # Check slope of lines
                 calc_slope = abs((y2 - y1) / (x2 - x1))
+
                 if calc_slope > min_slope and calc_slope < max_slope:
                     processed_lines.append(line)
 
     return processed_lines
+
+def average_slope_intercept(lines):
+    left_lines = []  # (slope, intercept)
+    left_weights = []  # (length,)
+    right_lines = []  # (slope, intercept)
+    right_weights = []  # (length,)
+    """
+    if lines.all() == None:
+        return (1, 1), (-1, 1)
+    """
+
+    for line in lines:
+        for x1, y1, x2, y2 in line:
+            if x2 == x1:
+                continue  # ignore a vertical line
+            slope = (y2 - y1) / (x2 - x1)
+            intercept = y1 - slope * x1
+            length = np.sqrt((y2 - y1)**2 + (x2 - x1)**2)
+            if slope < 0:  # y is reversed in image
+                left_lines.append((slope, intercept))
+                left_weights.append((length))
+            else:
+                right_lines.append((slope, intercept))
+                right_weights.append((length))
+
+    # add more weight to longer lines
+    left_lane = np.dot(left_weights,  left_lines) / \
+        np.sum(left_weights) if len(left_weights) > 0 else None
+    right_lane = np.dot(right_weights, right_lines) / \
+        np.sum(right_weights) if len(right_weights) > 0 else None
+
+    return left_lane, right_lane  # (slope, intercept), (slope, intercept)
+
+
+def make_line_points(y1, y2, line):
+    """
+    Convert a line represented in slope and intercept into pixel points
+    """
+    if line is None:
+        return None
+
+    slope, intercept = line
+
+    # make sure everything is integer as cv2.line requires it
+    slope = slope + 1
+    x1 = int((y1 - intercept) / slope)
+    x2 = int((y2 - intercept) / slope)
+    y1 = int(y1)
+    y2 = int(y2)
+
+    return ((x1, y1), (x2, y2))
+
+
+def lane_lines(image, lines):
+    left_lane, right_lane = average_slope_intercept(lines)
+
+    y1 = image.shape[0]  # bottom of the image
+    y2 = y1 * 0.6         # slightly lower than the middle
+
+    left_line = make_line_points(y1, y2, left_lane)
+    right_line = make_line_points(y1, y2, right_lane)
+
+    return left_line, right_line
+
+
+def draw_lane_lines(image, lines, color=[255, 0, 0], thickness=20):
+    # make a separate image to draw lines and combine with the orignal later
+    line_image = np.zeros_like(image)
+    for line in lines:
+        if line is not None:
+            # *line - unpack array item into tuple
+            #tuple_line = tuple(line)
+            # *line line[0] line[1]
+            cv2.line(line_image, line[0], line[1], color, thickness)
+    # image1 * a + image2 * b + lambda
+    # image1 and image2 must be the same shape.
+    return cv2.addWeighted(image, 1.0, line_image, 0.95, 0.0)
 
 # Process a single image frame
 def process_frame(frame):
@@ -143,6 +221,8 @@ def process_frame(frame):
     processed = apply_smoothing(processed, kernel_size = 3)
     # Select Region of Interest
     processed = select_region(processed)
+    if DEBUG_IMAGES:
+        cv2.imshow('ROI', processed)
     # Apply Canny Edge Detection
     processed = detect_edges(processed)
     if DEBUG_IMAGES:
@@ -150,10 +230,17 @@ def process_frame(frame):
     # Get Hough Lines
     raw_lines = get_hough_lines(processed)
     # Get processed Hough Lines
-    processed_lines = process_lines(raw_lines, min_slope=.4, max_slope=0.8)
+    processed_hough_lines = process_hough_lines(raw_lines, min_slope=.4, max_slope=0.8)
+    # Average lines and extract a main line
+    main_lines = [None] * 2 # [Left_line Right_line]
+    main_lines[0], main_lines[1] = lane_lines(rotated_img, processed_hough_lines)
+    # Draw main lines
+    main_lines_image = draw_lane_lines(rotated_img, main_lines, color=[255, 0, 0], thickness=20)
+    if DEBUG_IMAGES:
+        cv2.imshow('Main Lines', main_lines_image)
     # Draw Hough Lines on original image
     raw_line_image = draw_hough_lines(rotated_img, raw_lines) # For Debugging
-    processed_line_image = draw_hough_lines(rotated_img, processed_lines)
+    processed_line_image = draw_hough_lines(rotated_img, processed_hough_lines)
     if DEBUG_IMAGES:
         cv2.imshow('raw', raw_line_image)
         cv2.imshow('processed', processed_line_image)
@@ -181,7 +268,7 @@ def main():
         # Write the processed frame
         out.write(processed_frame)
         # Display processed image
-        cv2.imshow('frame', processed_frame)
+        cv2.imshow("Stay in Yo' Lane", processed_frame)
         # Delay for key press and frame rate
         if cv2.waitKey(args.video_delay) & 0xFF == ord('q'):
             break
