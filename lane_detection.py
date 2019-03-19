@@ -4,6 +4,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.image as mpimg
 import imutils
+import math
 from arg_parser import args
 
 # Debug options
@@ -15,7 +16,7 @@ cap = cv2.VideoCapture(args.video_in_dir + video_str + '.mov')
 # Get frame size (out of typical order because image gets rotated)
 frame_height = int(cap.get(3))
 frame_width = int(cap.get(4))
-# Define a codec and create VideoWriter object for output
+# Define a codec and create VideoWriter object for output (choose one)
 #fourcc = cv2.VideoWriter_fourcc(*'MJPG')
 fourcc = cv2.VideoWriter_fourcc(*'XVID')
 #fourcc = cv2.VideoWriter_fourcc(*'MPEG')
@@ -31,6 +32,8 @@ def add_image_mask(image, image_mask):
     image_mask is given more weight (e.g. lines_image)
     """
     try:
+        # image1 * a + image2 * b + lambda
+        # image1 and image2 must be the same shape.
         summed = cv2.addWeighted(image, 0.8, image_mask, 1, 0)
         return summed
     except:
@@ -51,7 +54,7 @@ def detect_edges(image, low_threshold=50, high_threshold=150):
         If pixel gradient < low_threshold:
             pixel rejected as edge
         If pixel gradient > low and pixel gradient < high:
-            ccepted as edge, only if connected to pixel above high_threshold
+            accepted as edge, only if connected to pixel above high_threshold
       Recommended ratio upper:lower is 2:1 or 3:1
     """
     return cv2.Canny(image, low_threshold, high_threshold)
@@ -65,7 +68,8 @@ def filter_region(image, vertices):
     if len(mask.shape)==2:
         cv2.fillPoly(mask, vertices, 255)
     else:
-        cv2.fillPoly(mask, vertices, (255,) * mask.shape[2]) # in case, the input image has a channel dimension
+        # In case the input image has a channel dimension
+        cv2.fillPoly(mask, vertices, (255,) * mask.shape[2]) 
     return cv2.bitwise_and(image, mask)
 
 
@@ -77,9 +81,9 @@ def select_region(image):
     # Define the polygon by vertices
     rows, cols = image.shape[:2]
     bottom_left  = [cols*0.05, rows*0.95]
-    top_left     = [cols*0.3, rows*0.55]
+    top_left     = [cols*0.3,  rows*0.55]
     bottom_right = [cols*0.95, rows*0.95]
-    top_right    = [cols*0.7, rows*0.55]
+    top_right    = [cols*0.7,  rows*0.55]
     # Vertices are an array of polygons (i.e array of arrays) and the data type must be integer.
     vertices = np.array([[bottom_left, top_left, top_right, bottom_right]], dtype=np.int32)
     return filter_region(image, vertices)
@@ -115,7 +119,7 @@ def draw_hough_lines(image, lines):
     return line_image
 
 # Process Hough Lines
-def process_lines(lines, min_slope=0.4, max_slope =0.7):
+def process_hough_lines(lines, min_slope=0.4, max_slope =0.7):
     """ 
     Apply post-processing to hough lines returned.
     """
@@ -123,8 +127,8 @@ def process_lines(lines, min_slope=0.4, max_slope =0.7):
     if len(lines) > 0:
         for line in lines:
             for x1, y1, x2, y2 in line:
-                # Skip for vertical line
-                if(x2 == x1):
+                # Skip vertical/horizontal lines
+                if(x2 == x1 or y2 == y1):
                     continue
                 # Check slope of lines
                 calc_slope = abs((y2 - y1) / (x2 - x1))
@@ -132,6 +136,75 @@ def process_lines(lines, min_slope=0.4, max_slope =0.7):
                     processed_lines.append(line)
 
     return processed_lines
+
+
+# Create image coordinates
+def make_coordinates(image, line_params):
+    """
+    Create coordinates using slope and intercept params.
+    """
+    slope, intercept = line_params
+    y1 = image.shape[0]
+    y2 = int(y1 * (3/5))
+    x1 = int((y1 - intercept)/ slope)
+    x2 = int((y2 - intercept)/ slope)
+    return np.array([x1, y1, x2, y2])
+
+# Find average slope intercept form
+def avg_slope_intercept(image, lines):
+    """
+    Create main lines using all detected hough lines.
+    """
+    left_fit = []
+    right_fit = []
+    for line in lines:
+        x1, y1, x2, y2 = line.reshape(4)
+        # Fit first order function
+        #params = np.polyfit((x1, y1), (x2, y2), 1)
+        slope = (y2 - y1) / (x2 - x1)
+        intercept = y1 - slope * x1
+        if(slope < 0):
+            left_fit.append((slope, intercept))
+            cv2.line(image, (x1, y1), (x2, y2), (255, 0, 0), 2)
+        else:
+            right_fit.append((slope, intercept))
+            cv2.line(image, (x1, y1), (x2, y2), (0, 255, 0), 2)
+
+    if(DEBUG_IMAGES):
+        cv2.imshow("Hough Lines", image) 
+
+    left_fit_avg, right_fit_avg= [], []
+    left_line, right_line = [], []
+    if(len(left_fit) > 0):
+        left_fit_avg = np.average(left_fit, axis=0)
+        left_line = make_coordinates(image, left_fit_avg)
+    if(len(right_fit) > 0):
+        right_fit_avg = np.average(right_fit, axis=0)
+        right_line = make_coordinates(image, right_fit_avg)
+
+    """
+    left_line, right_line = [], []
+    if(len(left_fit_avg) > 0):
+        left_line = make_coordinates(image, left_fit_avg)
+    if(len(right_fit_avg) > 0):
+        right_line = make_coordinates(image, right_fit_avg)
+    """
+
+    return np.array([left_line, right_line])
+
+# Draw lines on image
+def draw_lane_lines(image, lines, color=[0, 0, 255], thickness=20):
+    """
+    Draw lane lines on image frame.
+    """
+    # Make a separate image to draw lines and combine with the orignal later
+    line_image = np.zeros_like(image)
+    if lines is not None:
+        for line in lines:
+            if(len(line) > 0):
+                x1, y1, x2, y2 = line.reshape(4)
+                cv2.line(line_image, (x1, y1), (x2, y2), color, thickness)
+    return line_image 
 
 # Process a single image frame
 def process_frame(frame):
@@ -143,22 +216,29 @@ def process_frame(frame):
     processed = apply_smoothing(processed, kernel_size = 3)
     # Select Region of Interest
     processed = select_region(processed)
+    if DEBUG_IMAGES:
+        cv2.imshow('ROI', processed)
+        pass
     # Apply Canny Edge Detection
     processed = detect_edges(processed)
     if DEBUG_IMAGES:
         cv2.imshow('canny', processed)
+        pass
     # Get Hough Lines
     raw_lines = get_hough_lines(processed)
     # Get processed Hough Lines
-    processed_lines = process_lines(raw_lines, min_slope=.4, max_slope=0.8)
-    # Draw Hough Lines on original image
-    raw_line_image = draw_hough_lines(rotated_img, raw_lines) # For Debugging
-    processed_line_image = draw_hough_lines(rotated_img, processed_lines)
+    processed_hough_lines = process_hough_lines(raw_lines, min_slope=.6, max_slope=0.8)
+    # Draw Hough Lines on an empty image
+    processed_line_image = draw_hough_lines(rotated_img, processed_hough_lines)
     if DEBUG_IMAGES:
-        cv2.imshow('raw', raw_line_image)
-        cv2.imshow('processed', processed_line_image)
+        summed_image = add_image_mask(rotated_img, processed_line_image)
+        cv2.imshow('processed overlay', summed_image)
+    # Average lines and extract a main line
+    main_lines = avg_slope_intercept(rotated_img, processed_hough_lines)
+    # Draw main lane lines
+    main_lines_image = draw_lane_lines(rotated_img, main_lines, color=[0, 0, 255], thickness=20)
     # Show lines on original image
-    summed_image = add_image_mask(rotated_img, processed_line_image)
+    summed_image = add_image_mask(rotated_img, main_lines_image)
 
     # Return processed image
     return summed_image
@@ -172,20 +252,25 @@ def main():
     while(cap.isOpened()):
         # Capture video frame
         ret, frame = cap.read()
-        if ret == False:
+        if(ret == False):
             print("Video Complete")
             exit()
-        
         # Apply image processing
         processed_frame = process_frame(frame)
         # Write the processed frame
         out.write(processed_frame)
         # Display processed image
-        cv2.imshow('frame', processed_frame)
+        cv2.imshow("Stay in Yo' Lane", processed_frame)
         # Delay for key press and frame rate
-        if cv2.waitKey(args.video_delay) & 0xFF == ord('q'):
+        key_pressed = cv2.waitKey(args.video_delay) & 0xFF
+        if key_pressed == ord('q'):
+            # Quit
             break
-
+        if key_pressed == ord('p'):
+            # Pause
+            print("Press 'u' to unpause")
+            while cv2.waitKey(args.video_delay) & 0xFF != ord('u'):
+                pass
     # Cleanup
     cap.release()
     out.release()
@@ -199,10 +284,10 @@ if __name__ == '__main__':
     print("             Lane Detection                ")
     print("-------------------------------------------")
     # Display arguments and help
-    print("Arguments: ")
+    print("Info: ")
     print("\tVideo Number: ", args.video_num)
     print("\tVideo Frame Delay: ", args.video_delay,"ms")
-    print("Press 'q' to quit")
+    print("Press 'q' to quit, 'p' to pause")
 
     # Run main
     main()
